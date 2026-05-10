@@ -14,7 +14,7 @@
 <style>
   *{margin:0;padding:0;box-sizing:border-box}
   body{background:#0f172a;color:#e2e8f0;font-family:system-ui,-apple-system,sans-serif;overscroll-behavior:none}
-  input::placeholder{color:#475569}
+  input::placeholder,textarea::placeholder{color:#475569}
   input[type="date"]::-webkit-calendar-picker-indicator{filter:invert(.7)}
   select option{background:#1e293b}
   ::-webkit-scrollbar{width:3px}
@@ -28,7 +28,6 @@
 const { useState, useEffect, useRef } = React;
 const { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } = Recharts;
 
-/* ── Constants ── */
 const EX   = { EUR:1, USD:1.08, UYU:44 };
 const SYMB = { EUR:'€', USD:'$', UYU:'$U' };
 const CATS = {
@@ -48,13 +47,11 @@ const fmtM  = m       => { const [y,mo]=m.split('-'); return ['Ene','Feb','Mar',
 const today = ()      => new Date().toISOString().slice(0,10);
 const BLANK = { type:'expense',cat:'',desc:'',amt:'',cur:'EUR',who:'me',date:today(),recurring:false };
 
-/* ── localStorage helpers ── */
 const ls = {
   get: k  => { try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } },
   set: (k,v) => { try { localStorage.setItem(k,JSON.stringify(v)); } catch {} }
 };
 
-/* ── Setup screen (API key) ── */
 function Setup({ onDone }) {
   const [k, setK] = useState('');
   return (
@@ -65,23 +62,22 @@ function Setup({ onDone }) {
         <div style={{fontSize:13,color:'#64748b',textAlign:'center',marginBottom:24,lineHeight:1.7}}>
           Necesitás una API key de Anthropic para usar el Asesor IA y la importación de PDF.
         </div>
-        <input value={k} onChange={e=>setK(e.target.value)} placeholder="sk-ant-api03-..."
+        <input value={k} onChange={e=>setK(e.target.value)} onKeyDown={e=>e.key==='Enter'&&k.trim()&&(ls.set('fin_key',k.trim()),onDone(k.trim()))}
+          placeholder="sk-ant-api03-..."
           style={{width:'100%',background:'#0f172a',border:'1px solid #334155',borderRadius:10,padding:'12px 16px',color:'#e2e8f0',fontSize:14,marginBottom:10}}/>
         <button onClick={()=>{ if(k.trim()){ ls.set('fin_key',k.trim()); onDone(k.trim()); }}}
           style={{width:'100%',background:'linear-gradient(135deg,#6366f1,#8b5cf6)',border:'none',borderRadius:12,padding:14,color:'#fff',fontSize:15,fontWeight:700,cursor:'pointer',marginBottom:14}}>
           Entrar a FinanzasIA
         </button>
         <div style={{fontSize:12,color:'#475569',textAlign:'center',lineHeight:1.8}}>
-          Obtené tu key gratuita en{' '}
-          <a href="https://console.anthropic.com" target="_blank" style={{color:'#6366f1',textDecoration:'none'}}>console.anthropic.com</a>
-          <br/>La key se guarda solo en tu dispositivo.
+          Obtené tu key en <a href="https://console.anthropic.com" target="_blank" style={{color:'#6366f1',textDecoration:'none'}}>console.anthropic.com</a>
+          <br/>Se guarda solo en tu dispositivo.
         </div>
       </div>
     </div>
   );
 }
 
-/* ── Main App ── */
 function App() {
   const [apiKey, setApiKey] = useState(() => ls.get('fin_key') || '');
   const [txs,    setTxs]    = useState(() => ls.get('fin_txs') || []);
@@ -98,15 +94,17 @@ function App() {
   const [pdfBusy,setPdfBusy]= useState(false);
   const [pdfTxs, setPdfTxs] = useState([]);
   const [pdfStep,setPdfStep]= useState('upload');
+  const [pdfMode,setPdfMode]= useState('file');
+  const [pdfText,setPdfText]= useState('');
   const chatEl  = useRef(null);
   const fileRef = useRef(null);
+  const jsonRef = useRef(null);
 
   useEffect(() => { ls.set('fin_txs', txs); }, [txs]);
   useEffect(() => { chatEl.current?.scrollTo(0, chatEl.current.scrollHeight); }, [msgs]);
 
   if (!apiKey) return <Setup onDone={k => setApiKey(k)} />;
 
-  /* ── Derived ── */
   const vis  = txs.filter(t => who==='all' || t.who===who);
   const sumT = tp => vis.filter(t=>t.type===tp).reduce((s,t)=>s+conv(t.amt,t.cur,base),0);
   const inc=sumT('income'), exp=sumT('expense'), inv=sumT('investment'), fut=sumT('future');
@@ -119,46 +117,75 @@ function App() {
   };
   const bycat = () => { const m={}; vis.filter(t=>t.type==='expense').forEach(t=>{ m[t.cat]=(m[t.cat]||0)+conv(t.amt,t.cur,base); }); return Object.entries(m).map(([n,v])=>({n,v:+v.toFixed(2)})).sort((a,b)=>b.v-a.v); };
 
-  /* ── Actions ── */
   const addTx = () => { if(!frm.amt||!frm.cat||isNaN(+frm.amt)||+frm.amt<=0) return; setTxs(p=>[...p,{...frm,id:Date.now(),amt:+frm.amt}]); setFrm(BLANK); setShowAdd(false); };
   const delTx = id => setTxs(p=>p.filter(t=>t.id!==id));
-  const closePdf = () => { setShowPdf(false); setPdfStep('upload'); setPdfTxs([]); };
+
+  /* ── Export / Import ── */
+  const exportCSV = () => {
+    const hdr = 'Fecha,Tipo,Categoría,Descripción,Importe,Moneda,Persona,Recurrente';
+    const rows = txs.map(t=>`${t.date},${TL[t.type]},${t.cat},"${(t.desc||'').replace(/"/g,'""')}",${t.type==='income'?'':'-'}${t.amt},${t.cur},${t.who==='me'?'Yo':'Pareja'},${t.recurring?'Sí':'No'}`);
+    const blob = new Blob(['\uFEFF'+[hdr,...rows].join('\n')],{type:'text/csv;charset=utf-8'});
+    const a = Object.assign(document.createElement('a'),{href:URL.createObjectURL(blob),download:`finanzas_${today()}.csv`});
+    a.click(); URL.revokeObjectURL(a.href);
+  };
+
+  const exportJSON = () => {
+    const blob = new Blob([JSON.stringify({exportDate:today(),total:txs.length,transactions:txs},null,2)],{type:'application/json'});
+    const a = Object.assign(document.createElement('a'),{href:URL.createObjectURL(blob),download:`finanzas_${today()}.json`});
+    a.click(); URL.revokeObjectURL(a.href);
+  };
+
+  const importJSON = async (file) => {
+    try {
+      const text = await file.text();
+      const data = JSON.parse(text);
+      const toAdd = data.transactions || (Array.isArray(data) ? data : null);
+      if (!toAdd?.length) throw new Error();
+      setTxs(p=>[...p,...toAdd]);
+      alert(`✅ ${toAdd.length} transacciones importadas correctamente.`);
+    } catch { alert('❌ Archivo inválido. Usá un JSON exportado desde FinanzasIA.'); }
+  };
+
+  /* ── PDF ── */
+  const closePdf = () => { setShowPdf(false); setPdfStep('upload'); setPdfTxs([]); setPdfMode('file'); setPdfText(''); };
 
   const apiFetch = (body) => fetch('https://api.anthropic.com/v1/messages', {
     method:'POST',
-    headers:{ 'Content-Type':'application/json', 'x-api-key': apiKey, 'anthropic-version':'2023-06-01', 'anthropic-dangerous-direct-browser-access':'true' },
+    headers:{ 'Content-Type':'application/json', 'x-api-key':apiKey, 'anthropic-version':'2023-06-01', 'anthropic-dangerous-direct-browser-access':'true' },
     body: JSON.stringify(body)
   });
+
+  const PDF_SYSTEM = `Eres un extractor de transacciones bancarias experto. Extrae TODAS las transacciones y responde ÚNICAMENTE con JSON válido sin texto adicional ni markdown: {"transactions":[{"date":"YYYY-MM-DD","description":"texto original","amount":123.45,"type":"expense","suggestedCategory":"Alimentación","currency":"EUR"}]} type: "income" abonos, "expense" cargos. amount siempre positivo. suggestedCategory exactamente una de: ${ALL_CATS.join(', ')}. currency del documento (EUR por defecto).`;
+
+  const parsePdfResponse = async (resp) => {
+    const d = await resp.json();
+    const raw = d.content?.map(b=>b.text||'').join('')||'';
+    const parsed = JSON.parse(raw.replace(/```json|```/g,'').trim());
+    if (!parsed.transactions?.length) throw new Error('empty');
+    setPdfTxs(parsed.transactions.map((t,i)=>({...t,tempId:i,selected:true,who:'me'})));
+    setPdfStep('review');
+  };
 
   const handlePdf = async (file) => {
     if (!file) return;
     setPdfBusy(true);
     try {
       const b64 = await new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(r.result.split(',')[1]); r.onerror=rej; r.readAsDataURL(file); });
-      const resp = await apiFetch({
-        model:'claude-sonnet-4-20250514', max_tokens:4000,
-        system:`Eres un extractor de transacciones bancarias experto. Analiza el PDF y extrae TODAS las transacciones.
-Responde ÚNICAMENTE con JSON válido sin texto adicional ni markdown:
-{"transactions":[{"date":"YYYY-MM-DD","description":"texto original","amount":123.45,"type":"expense","suggestedCategory":"Alimentación","currency":"EUR"}]}
-- type: "income" para abonos/ingresos, "expense" para cargos/débitos
-- amount: siempre positivo
-- suggestedCategory: exactamente una de: ${ALL_CATS.join(', ')}
-- currency: detectar del documento (EUR por defecto)`,
-        messages:[{ role:'user', content:[
-          { type:'document', source:{ type:'base64', media_type:'application/pdf', data:b64 } },
-          { type:'text', text:'Extrae todas las transacciones de este extracto bancario.' }
-        ]}]
-      });
-      const d = await resp.json();
-      const raw = d.content?.map(b=>b.text||'').join('')||'';
-      const parsed = JSON.parse(raw.replace(/```json|```/g,'').trim());
-      if (!parsed.transactions?.length) throw new Error('empty');
-      setPdfTxs(parsed.transactions.map((t,i)=>({...t,tempId:i,selected:true,who:'me'})));
-      setPdfStep('review');
-    } catch(e) {
-      alert('No se pudo procesar el PDF.\n\n• Usá un PDF descargado directamente del banco\n• Verificá que el PDF tenga texto seleccionable (no es una imagen)');
-      setPdfStep('upload');
-    }
+      await parsePdfResponse(await apiFetch({ model:'claude-sonnet-4-20250514', max_tokens:4000, system:PDF_SYSTEM,
+        messages:[{ role:'user', content:[{ type:'document', source:{ type:'base64', media_type:'application/pdf', data:b64 } },{ type:'text', text:'Extrae todas las transacciones.' }]}]
+      }));
+    } catch { alert('No se pudo procesar el PDF.\n• Usá un PDF descargado del banco (no foto)\n• Verificá que el PDF tenga texto seleccionable'); setPdfStep('upload'); }
+    setPdfBusy(false);
+  };
+
+  const handlePdfText = async () => {
+    if (!pdfText.trim()) return;
+    setPdfBusy(true);
+    try {
+      await parsePdfResponse(await apiFetch({ model:'claude-sonnet-4-20250514', max_tokens:4000, system:PDF_SYSTEM,
+        messages:[{ role:'user', content:`Extrae todas las transacciones de este extracto bancario:\n\n${pdfText}` }]
+      }));
+    } catch { alert('No se pudo analizar el texto. Pegá el extracto completo.'); setPdfStep('upload'); }
     setPdfBusy(false);
   };
 
@@ -171,8 +198,9 @@ Responde ÚNICAMENTE con JSON válido sin texto adicional ni markdown:
     closePdf();
   };
 
+  /* ── AI ── */
   const ctx = () =>
-`Eres un asesor financiero personal experto. El usuario (35 años, Madrid) vive con su pareja y un bebé de 5 meses. Son uruguayos. Trabaja como Team Leader en goFLUENT. Responde en español, con empatía y consejos prácticos.
+`Eres asesor financiero personal. Usuario (35 años, Madrid) con pareja y bebé de 5 meses. Uruguayos. Team Leader en goFLUENT. Responde en español con empatía y consejos prácticos.
 SITUACIÓN (base ${base}): Ingresos:${fmtA(inc,base)} Gastos:${fmtA(exp,base)} Inversiones:${fmtA(inv,base)} Futuros:${fmtA(fut,base)} Balance:${fmtA(bal,base)} Ahorro:${inc>0?((bal/inc)*100).toFixed(1):0}%
 Vista: ${who==='all'?'Familia':who==='me'?'Yo':'Pareja'}
 TRANSACCIONES:\n${vis.slice(-20).map(t=>`${t.date}|${TL[t.type]}|${t.cat}|${t.desc||'-'}|${SYMB[t.cur]}${t.amt}|${t.who==='me'?'Yo':'Pareja'}${t.recurring?' [R]':''}`).join('\n')||'Sin datos.'}`;
@@ -188,7 +216,7 @@ TRANSACCIONES:\n${vis.slice(-20).map(t=>`${t.date}|${TL[t.type]}|${t.cat}|${t.de
     setABusy(false);
   };
 
-  /* ── UI ── */
+  /* ── UI helpers ── */
   const navBtn = (t,icon,label) => (
     <button onClick={()=>setTab(t)} style={{flex:1,background:'none',border:'none',cursor:'pointer',display:'flex',flexDirection:'column',alignItems:'center',gap:2,padding:'5px 0',color:tab===t?'#6366f1':'#64748b'}}>
       <span style={{fontSize:20}}>{icon}</span><span style={{fontSize:10,fontWeight:600}}>{label}</span>
@@ -269,7 +297,7 @@ TRANSACCIONES:\n${vis.slice(-20).map(t=>`${t.date}|${TL[t.type]}|${t.cat}|${t.de
             </div>
           )}
           <div style={{display:'flex',gap:10,marginBottom:12}}>
-            <button onClick={()=>askAI('Genera un resumen completo de nuestra situación financiera. Analiza ingresos, gastos por categoría, tasa de ahorro e inversiones. Dame 3 recomendaciones concretas para una familia joven en Madrid con bebé.')}
+            <button onClick={()=>askAI('Genera un resumen completo de nuestra situación financiera familiar. Analiza ingresos, gastos por categoría, tasa de ahorro e inversiones. Dame 3 recomendaciones concretas para una familia joven en Madrid con bebé.')}
               style={{flex:1,background:'#1e293b',border:'1px solid #6366f1',borderRadius:14,padding:13,cursor:'pointer',color:'#e2e8f0',fontSize:13,fontWeight:700,display:'flex',alignItems:'center',justifyContent:'center',gap:6}}>🤖 Analizar con IA</button>
             <button onClick={()=>{setShowPdf(true);setPdfStep('upload');setPdfTxs([]);}}
               style={{flex:1,background:'#1e293b',border:'1px solid #334155',borderRadius:14,padding:13,cursor:'pointer',color:'#e2e8f0',fontSize:13,fontWeight:700,display:'flex',alignItems:'center',justifyContent:'center',gap:6}}>📄 Importar PDF</button>
@@ -290,6 +318,18 @@ TRANSACCIONES:\n${vis.slice(-20).map(t=>`${t.date}|${TL[t.type]}|${t.cat}|${t.de
               <button key={v} onClick={()=>setFtf(v)} style={{padding:'6px 12px',borderRadius:20,border:'none',cursor:'pointer',fontSize:12,fontWeight:700,whiteSpace:'nowrap',flexShrink:0,background:ftf===v?(TC[v]||'#6366f1'):'#1e293b',color:ftf===v?'#fff':'#64748b'}}>{l}</button>
             ))}
           </div>
+
+          {/* Backup bar */}
+          {txs.length>0&&(
+            <div style={{display:'flex',gap:6,marginBottom:14,padding:'10px 12px',background:'#1e293b',borderRadius:12,alignItems:'center'}}>
+              <span style={{fontSize:12,color:'#64748b',flex:1,fontWeight:600}}>💾 Backup</span>
+              <button onClick={exportCSV} style={{background:'#0f172a',border:'1px solid #334155',borderRadius:8,padding:'5px 10px',cursor:'pointer',color:'#94a3b8',fontSize:12,fontWeight:600}}>📊 CSV</button>
+              <button onClick={exportJSON} style={{background:'#0f172a',border:'1px solid #334155',borderRadius:8,padding:'5px 10px',cursor:'pointer',color:'#94a3b8',fontSize:12,fontWeight:600}}>💾 JSON</button>
+              <button onClick={()=>jsonRef.current?.click()} style={{background:'#0f172a',border:'1px solid #10b981',borderRadius:8,padding:'5px 10px',cursor:'pointer',color:'#10b981',fontSize:12,fontWeight:600}}>📥 Restaurar</button>
+              <input ref={jsonRef} type="file" accept=".json" style={{display:'none'}} onChange={e=>{if(e.target.files[0]) importJSON(e.target.files[0]);}}/>
+            </div>
+          )}
+
           {filtTxs.length===0?<div style={{textAlign:'center',padding:48,color:'#475569'}}>Sin movimientos</div>:filtTxs.map(t=>(
             <div key={t.id} style={{background:'#1e293b',borderRadius:14,padding:14,marginBottom:8,display:'flex',alignItems:'center',gap:10,borderLeft:`3px solid ${TC[t.type]}`}}>
               <div style={{flex:1,minWidth:0}}>
@@ -314,7 +354,7 @@ TRANSACCIONES:\n${vis.slice(-20).map(t=>`${t.date}|${TL[t.type]}|${t.cat}|${t.de
         <div style={{padding:'16px 16px 0',display:'flex',flexDirection:'column',height:'calc(100vh - 190px)'}}>
           <div style={{fontWeight:700,fontSize:16,marginBottom:10}}>🤖 Asesor IA</div>
           <div style={{display:'flex',gap:6,marginBottom:12,flexWrap:'wrap'}}>
-            {[['📊 Resumen','Genera un resumen completo de nuestra situación financiera familiar con recomendaciones.'],['💡 Ahorrar','¿Cómo puedo aumentar nuestra tasa de ahorro? Estrategias concretas para Madrid con bebé.'],['📈 Invertir','¿Cuánto y en qué debería invertir según mi situación? Somos uruguayos en España.'],['⚠️ Alertas','Identificá patrones negativos o gastos preocupantes en mis finanzas.']].map(([l,m])=>(
+            {[['📊 Resumen','Genera un resumen completo de nuestra situación financiera familiar con recomendaciones.'],['💡 Ahorrar','¿Cómo aumentar nuestra tasa de ahorro? Estrategias para Madrid con bebé.'],['📈 Invertir','¿Cuánto y en qué invertir? Somos uruguayos en España.'],['⚠️ Alertas','Identificá patrones negativos o gastos preocupantes.']].map(([l,m])=>(
               <button key={l} onClick={()=>askAI(m)} style={{background:'#1e293b',border:'1px solid #334155',borderRadius:20,padding:'6px 12px',cursor:'pointer',color:'#cbd5e1',fontSize:12,fontWeight:600}}>{l}</button>
             ))}
           </div>
@@ -338,25 +378,49 @@ TRANSACCIONES:\n${vis.slice(-20).map(t=>`${t.date}|${TL[t.type]}|${t.cat}|${t.de
               <div><div style={{fontWeight:700,fontSize:16}}>📄 Importar extracto PDF</div><div style={{fontSize:12,color:'#64748b'}}>{pdfStep==='upload'?'Subí tu extracto bancario':'Revisá y confirmá las transacciones'}</div></div>
               {!pdfBusy&&<button onClick={closePdf} style={{background:'none',border:'none',cursor:'pointer',color:'#64748b',fontSize:22}}>✕</button>}
             </div>
+
             {pdfStep==='upload'&&(
-              <div style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',padding:28}}>
+              <div style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',padding:24}}>
                 {pdfBusy?(
                   <div style={{textAlign:'center'}}><div style={{fontSize:56,marginBottom:16}}>🔍</div><div style={{fontWeight:700,fontSize:17,marginBottom:8}}>Analizando con IA...</div><div style={{fontSize:13,color:'#64748b',marginBottom:24}}>Extrayendo transacciones</div><div style={{display:'flex',gap:8,justifyContent:'center'}}>{[0,1,2].map(i=><div key={i} style={{width:10,height:10,borderRadius:'50%',background:'#6366f1',animation:`pulse 1.2s ${i*0.3}s infinite`}}/>)}</div></div>
                 ):(
                   <>
-                    <div style={{width:'100%',maxWidth:320,border:'2px dashed #334155',borderRadius:20,padding:'36px 28px',textAlign:'center',cursor:'pointer',background:'#0f172a'}} onClick={()=>fileRef.current?.click()} onDragOver={e=>e.preventDefault()} onDrop={e=>{e.preventDefault();const f=e.dataTransfer.files[0];if(f?.type==='application/pdf')handlePdf(f);}}>
-                      <div style={{fontSize:56,marginBottom:12}}>📄</div>
-                      <div style={{fontWeight:700,fontSize:15,marginBottom:8}}>Subir extracto bancario</div>
-                      <div style={{fontSize:13,color:'#64748b',lineHeight:1.7}}>Tocá aquí o arrastrá el PDF<br/><span style={{fontSize:12,color:'#475569'}}>Solo PDFs con texto seleccionable</span></div>
+                    <div style={{display:'flex',gap:6,marginBottom:20,background:'#0f172a',borderRadius:12,padding:4,width:'100%',maxWidth:320}}>
+                      {[['file','📁 Subir PDF'],['text','📋 Pegar texto']].map(([v,l])=>(
+                        <button key={v} onClick={()=>setPdfMode(v)} style={{flex:1,padding:'8px 0',borderRadius:9,border:'none',cursor:'pointer',fontSize:13,fontWeight:700,background:pdfMode===v?'#6366f1':'transparent',color:pdfMode===v?'#fff':'#64748b',transition:'all .2s'}}>{l}</button>
+                      ))}
                     </div>
-                    <input ref={fileRef} type="file" accept=".pdf,application/pdf" style={{display:'none'}} onChange={e=>{if(e.target.files[0]) handlePdf(e.target.files[0]);}}/>
-                    <div style={{marginTop:20,background:'#0f172a',borderRadius:14,padding:'12px 16px',maxWidth:320,width:'100%'}}>
-                      <div style={{fontSize:12,color:'#64748b',lineHeight:1.8}}>💡 <b style={{color:'#94a3b8'}}>Cómo obtener el PDF:</b><br/>App del banco → Movimientos → Descargar extracto</div>
-                    </div>
+                    {pdfMode==='file'?(
+                      <>
+                        <div style={{width:'100%',maxWidth:320,border:'2px dashed #334155',borderRadius:20,padding:'28px 24px',textAlign:'center',cursor:'pointer',background:'#0f172a'}}
+                          onClick={()=>fileRef.current?.click()} onDragOver={e=>e.preventDefault()}
+                          onDrop={e=>{e.preventDefault();const f=e.dataTransfer.files[0];if(f?.type==='application/pdf')handlePdf(f);}}>
+                          <div style={{fontSize:48,marginBottom:10}}>📄</div>
+                          <div style={{fontWeight:700,fontSize:15,marginBottom:6}}>Subir PDF del banco</div>
+                          <div style={{fontSize:13,color:'#64748b',lineHeight:1.6}}>Tocá aquí o arrastrá<br/><span style={{fontSize:12,color:'#475569'}}>(PDF con texto, no imagen)</span></div>
+                        </div>
+                        <input ref={fileRef} type="file" accept=".pdf,application/pdf" style={{display:'none'}} onChange={e=>{if(e.target.files[0]) handlePdf(e.target.files[0]);}}/>
+                        <div style={{marginTop:14,fontSize:12,color:'#64748b',textAlign:'center',lineHeight:1.7,maxWidth:300}}>
+                          💡 App Santander / BBVA / CaixaBank → Movimientos → Descargar PDF
+                        </div>
+                      </>
+                    ):(
+                      <div style={{width:'100%',maxWidth:340}}>
+                        <div style={{fontSize:13,color:'#94a3b8',marginBottom:8,fontWeight:600}}>Pegá el texto del extracto:</div>
+                        <textarea value={pdfText} onChange={e=>setPdfText(e.target.value)}
+                          placeholder={"1. Abrí el PDF del banco\n2. Ctrl+A → Ctrl+C\n3. Pegá aquí con Ctrl+V"}
+                          style={{width:'100%',height:160,background:'#0f172a',border:'1px solid #334155',borderRadius:12,padding:'12px 14px',color:'#e2e8f0',fontSize:13,resize:'none',outline:'none',lineHeight:1.6,boxSizing:'border-box'}}/>
+                        <button onClick={handlePdfText} disabled={!pdfText.trim()}
+                          style={{width:'100%',background:pdfText.trim()?'linear-gradient(135deg,#6366f1,#8b5cf6)':'#334155',border:'none',borderRadius:12,padding:13,color:'#fff',fontSize:14,fontWeight:700,cursor:pdfText.trim()?'pointer':'not-allowed',marginTop:10,opacity:pdfText.trim()?1:.5}}>
+                          🤖 Analizar con IA
+                        </button>
+                      </div>
+                    )}
                   </>
                 )}
               </div>
             )}
+
             {pdfStep==='review'&&(
               <>
                 <div style={{padding:'10px 16px',borderBottom:'1px solid #334155',display:'flex',justifyContent:'space-between',alignItems:'center',flexShrink:0}}>
