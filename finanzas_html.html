@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#0f172a">
+<title>💰 FinanzasIA</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://unpkg.com/recharts/umd/Recharts.js"></script>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:#0f172a;color:#e2e8f0;font-family:system-ui,-apple-system,sans-serif;overscroll-behavior:none}
+  input::placeholder{color:#475569}
+  input[type="date"]::-webkit-calendar-picker-indicator{filter:invert(.7)}
+  select option{background:#1e293b}
+  ::-webkit-scrollbar{width:3px}
+  ::-webkit-scrollbar-thumb{background:#334155;border-radius:4px}
+  @keyframes pulse{0%,100%{opacity:.3;transform:scale(.8)}50%{opacity:1;transform:scale(1)}}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef } = React;
+const { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } = Recharts;
+
+/* ── Constants ── */
+const EX   = { EUR:1, USD:1.08, UYU:44 };
+const SYMB = { EUR:'€', USD:'$', UYU:'$U' };
+const CATS = {
+  income:     ['Salario','Bonus','Freelance','Alquiler','Dividendos','Otro'],
+  expense:    ['Vivienda','Alimentación','Bebé','Transporte','Ocio','Salud','Suscripciones','Ropa','Restaurantes','Otro'],
+  investment: ['Fondos','Acciones','Cripto','Ahorro','Plan pensión','Otro'],
+  future:     ['Vacaciones','Electrónica','Coche','Educación','Reformas','Otro']
+};
+const ALL_CATS = ['Salario','Bonus','Freelance','Alquiler','Dividendos','Vivienda','Alimentación','Bebé','Transporte','Ocio','Salud','Suscripciones','Ropa','Restaurantes','Fondos','Acciones','Cripto','Ahorro','Plan pensión','Vacaciones','Electrónica','Coche','Educación','Reformas','Otro'];
+const TL = { income:'Ingreso', expense:'Gasto', investment:'Inversión', future:'Futuro' };
+const TC = { income:'#10b981', expense:'#ef4444', investment:'#818cf8', future:'#f59e0b' };
+const PC = ['#818cf8','#10b981','#f59e0b','#ef4444','#ec4899','#14b8a6','#f97316','#a78bfa'];
+
+const conv  = (a,f,t) => (a/EX[f])*EX[t];
+const fmtA  = (a,c)   => `${SYMB[c]}${Math.abs(a).toFixed(2)}`;
+const fmtM  = m       => { const [y,mo]=m.split('-'); return ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'][+mo-1]+' '+y.slice(2); };
+const today = ()      => new Date().toISOString().slice(0,10);
+const BLANK = { type:'expense',cat:'',desc:'',amt:'',cur:'EUR',who:'me',date:today(),recurring:false };
+
+/* ── localStorage helpers ── */
+const ls = {
+  get: k  => { try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } },
+  set: (k,v) => { try { localStorage.setItem(k,JSON.stringify(v)); } catch {} }
+};
+
+/* ── Setup screen (API key) ── */
+function Setup({ onDone }) {
+  const [k, setK] = useState('');
+  return (
+    <div style={{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',padding:24}}>
+      <div style={{background:'#1e293b',borderRadius:20,padding:32,maxWidth:360,width:'100%'}}>
+        <div style={{fontSize:48,textAlign:'center',marginBottom:12}}>💰</div>
+        <div style={{fontSize:22,fontWeight:800,textAlign:'center',marginBottom:6}}>FinanzasIA</div>
+        <div style={{fontSize:13,color:'#64748b',textAlign:'center',marginBottom:24,lineHeight:1.7}}>
+          Necesitás una API key de Anthropic para usar el Asesor IA y la importación de PDF.
+        </div>
+        <input value={k} onChange={e=>setK(e.target.value)} placeholder="sk-ant-api03-..."
+          style={{width:'100%',background:'#0f172a',border:'1px solid #334155',borderRadius:10,padding:'12px 16px',color:'#e2e8f0',fontSize:14,marginBottom:10}}/>
+        <button onClick={()=>{ if(k.trim()){ ls.set('fin_key',k.trim()); onDone(k.trim()); }}}
+          style={{width:'100%',background:'linear-gradient(135deg,#6366f1,#8b5cf6)',border:'none',borderRadius:12,padding:14,color:'#fff',fontSize:15,fontWeight:700,cursor:'pointer',marginBottom:14}}>
+          Entrar a FinanzasIA
+        </button>
+        <div style={{fontSize:12,color:'#475569',textAlign:'center',lineHeight:1.8}}>
+          Obtené tu key gratuita en{' '}
+          <a href="https://console.anthropic.com" target="_blank" style={{color:'#6366f1',textDecoration:'none'}}>console.anthropic.com</a>
+          <br/>La key se guarda solo en tu dispositivo.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── Main App ── */
+function App() {
+  const [apiKey, setApiKey] = useState(() => ls.get('fin_key') || '');
+  const [txs,    setTxs]    = useState(() => ls.get('fin_txs') || []);
+  const [tab,    setTab]    = useState('dash');
+  const [who,    setWho]    = useState('all');
+  const [base,   setBase]   = useState('EUR');
+  const [showAdd,setShowAdd]= useState(false);
+  const [ftf,    setFtf]    = useState('all');
+  const [msgs,   setMsgs]   = useState([]);
+  const [aInp,   setAInp]   = useState('');
+  const [aBusy,  setABusy]  = useState(false);
+  const [frm,    setFrm]    = useState(BLANK);
+  const [showPdf,setShowPdf]= useState(false);
+  const [pdfBusy,setPdfBusy]= useState(false);
+  const [pdfTxs, setPdfTxs] = useState([]);
+  const [pdfStep,setPdfStep]= useState('upload');
+  const chatEl  = useRef(null);
+  const fileRef = useRef(null);
+
+  useEffect(() => { ls.set('fin_txs', txs); }, [txs]);
+  useEffect(() => { chatEl.current?.scrollTo(0, chatEl.current.scrollHeight); }, [msgs]);
+
+  if (!apiKey) return <Setup onDone={k => setApiKey(k)} />;
+
+  /* ── Derived ── */
+  const vis  = txs.filter(t => who==='all' || t.who===who);
+  const sumT = tp => vis.filter(t=>t.type===tp).reduce((s,t)=>s+conv(t.amt,t.cur,base),0);
+  const inc=sumT('income'), exp=sumT('expense'), inv=sumT('investment'), fut=sumT('future');
+  const bal=inc-exp;
+
+  const monthly = () => {
+    const m={};
+    vis.filter(t=>t.type!=='future').forEach(t=>{ const k=t.date.slice(0,7); if(!m[k]) m[k]={k,income:0,expense:0,investment:0}; m[k][t.type]+=conv(t.amt,t.cur,base); });
+    return Object.values(m).sort((a,b)=>a.k>b.k?1:-1).slice(-6).map(d=>({...d,k:fmtM(d.k),income:+d.income.toFixed(0),expense:+d.expense.toFixed(0),investment:+d.investment.toFixed(0)}));
+  };
+  const bycat = () => { const m={}; vis.filter(t=>t.type==='expense').forEach(t=>{ m[t.cat]=(m[t.cat]||0)+conv(t.amt,t.cur,base); }); return Object.entries(m).map(([n,v])=>({n,v:+v.toFixed(2)})).sort((a,b)=>b.v-a.v); };
+
+  /* ── Actions ── */
+  const addTx = () => { if(!frm.amt||!frm.cat||isNaN(+frm.amt)||+frm.amt<=0) return; setTxs(p=>[...p,{...frm,id:Date.now(),amt:+frm.amt}]); setFrm(BLANK); setShowAdd(false); };
+  const delTx = id => setTxs(p=>p.filter(t=>t.id!==id));
+  const closePdf = () => { setShowPdf(false); setPdfStep('upload'); setPdfTxs([]); };
+
+  const apiFetch = (body) => fetch('https://api.anthropic.com/v1/messages', {
+    method:'POST',
+    headers:{ 'Content-Type':'application/json', 'x-api-key': apiKey, 'anthropic-version':'2023-06-01', 'anthropic-dangerous-direct-browser-access':'true' },
+    body: JSON.stringify(body)
+  });
+
+  const handlePdf = async (file) => {
+    if (!file) return;
+    setPdfBusy(true);
+    try {
+      const b64 = await new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(r.result.split(',')[1]); r.onerror=rej; r.readAsDataURL(file); });
+      const resp = await apiFetch({
+        model:'claude-sonnet-4-20250514', max_tokens:4000,
+        system:`Eres un extractor de transacciones bancarias experto. Analiza el PDF y extrae TODAS las transacciones.
+Responde ÚNICAMENTE con JSON válido sin texto adicional ni markdown:
+{"transactions":[{"date":"YYYY-MM-DD","description":"texto original","amount":123.45,"type":"expense","suggestedCategory":"Alimentación","currency":"EUR"}]}
+- type: "income" para abonos/ingresos, "expense" para cargos/débitos
+- amount: siempre positivo
+- suggestedCategory: exactamente una de: ${ALL_CATS.join(', ')}
+- currency: detectar del documento (EUR por defecto)`,
+        messages:[{ role:'user', content:[
+          { type:'document', source:{ type:'base64', media_type:'application/pdf', data:b64 } },
+          { type:'text', text:'Extrae todas las transacciones de este extracto bancario.' }
+        ]}]
+      });
+      const d = await resp.json();
+      const raw = d.content?.map(b=>b.text||'').join('')||'';
+      const parsed = JSON.parse(raw.replace(/```json|```/g,'').trim());
+      if (!parsed.transactions?.length) throw new Error('empty');
+      setPdfTxs(parsed.transactions.map((t,i)=>({...t,tempId:i,selected:true,who:'me'})));
+      setPdfStep('review');
+    } catch(e) {
+      alert('No se pudo procesar el PDF.\n\n• Usá un PDF descargado directamente del banco\n• Verificá que el PDF tenga texto seleccionable (no es una imagen)');
+      setPdfStep('upload');
+    }
+    setPdfBusy(false);
+  };
+
+  const updPdf = (i,k,v) => setPdfTxs(p=>p.map((t,idx)=>idx===i?{...t,[k]:v}:t));
+  const togAll = v => setPdfTxs(p=>p.map(t=>({...t,selected:v})));
+  const selCount = pdfTxs.filter(t=>t.selected).length;
+
+  const importPdf = () => {
+    setTxs(p=>[...p,...pdfTxs.filter(t=>t.selected).map(t=>({ id:Date.now()+Math.random(), type:t.type, cat:t.suggestedCategory||'Otro', desc:t.description, amt:parseFloat(t.amount)||0, cur:t.currency||'EUR', who:t.who, date:t.date, recurring:false }))]);
+    closePdf();
+  };
+
+  const ctx = () =>
+`Eres un asesor financiero personal experto. El usuario (35 años, Madrid) vive con su pareja y un bebé de 5 meses. Son uruguayos. Trabaja como Team Leader en goFLUENT. Responde en español, con empatía y consejos prácticos.
+SITUACIÓN (base ${base}): Ingresos:${fmtA(inc,base)} Gastos:${fmtA(exp,base)} Inversiones:${fmtA(inv,base)} Futuros:${fmtA(fut,base)} Balance:${fmtA(bal,base)} Ahorro:${inc>0?((bal/inc)*100).toFixed(1):0}%
+Vista: ${who==='all'?'Familia':who==='me'?'Yo':'Pareja'}
+TRANSACCIONES:\n${vis.slice(-20).map(t=>`${t.date}|${TL[t.type]}|${t.cat}|${t.desc||'-'}|${SYMB[t.cur]}${t.amt}|${t.who==='me'?'Yo':'Pareja'}${t.recurring?' [R]':''}`).join('\n')||'Sin datos.'}`;
+
+  const askAI = async (msg) => {
+    if (!msg?.trim()) return;
+    const m=msg.trim(); setMsgs(p=>[...p,{r:'user',c:m}]); setAInp(''); setABusy(true); setTab('ai');
+    try {
+      const res = await apiFetch({ model:'claude-sonnet-4-20250514', max_tokens:1000, system:ctx(), messages:[...msgs,{r:'user',c:m}].map(x=>({role:x.r,content:x.c})) });
+      const d = await res.json();
+      setMsgs(p=>[...p,{r:'assistant',c:d.content?.map(b=>b.text||'').join('')||'Sin respuesta.'}]);
+    } catch { setMsgs(p=>[...p,{r:'assistant',c:'❌ Error de conexión.'}]); }
+    setABusy(false);
+  };
+
+  /* ── UI ── */
+  const navBtn = (t,icon,label) => (
+    <button onClick={()=>setTab(t)} style={{flex:1,background:'none',border:'none',cursor:'pointer',display:'flex',flexDirection:'column',alignItems:'center',gap:2,padding:'5px 0',color:tab===t?'#6366f1':'#64748b'}}>
+      <span style={{fontSize:20}}>{icon}</span><span style={{fontSize:10,fontWeight:600}}>{label}</span>
+    </button>
+  );
+  const si={background:'#0f172a',border:'1px solid #334155',borderRadius:10,padding:'10px 12px',color:'#e2e8f0',fontSize:14,boxSizing:'border-box'};
+  const md=monthly(), cd=bycat(), filtTxs=vis.filter(t=>ftf==='all'||t.type===ftf).sort((a,b)=>b.id-a.id);
+
+  return (
+    <div style={{fontFamily:'system-ui,sans-serif',background:'#0f172a',color:'#e2e8f0',minHeight:'100vh',maxWidth:480,margin:'0 auto',paddingBottom:72}}>
+
+      {/* HEADER */}
+      <div style={{background:'#1e293b',padding:'14px 16px 10px',position:'sticky',top:0,zIndex:10}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
+          <div><div style={{fontSize:17,fontWeight:800}}>💰 FinanzasIA</div><div style={{fontSize:11,color:'#64748b'}}>Gestión financiera familiar</div></div>
+          <select value={base} onChange={e=>setBase(e.target.value)} style={{background:'#334155',color:'#e2e8f0',border:'none',borderRadius:8,padding:'5px 10px',fontSize:13,fontWeight:700}}>
+            {['EUR','USD','UYU'].map(c=><option key={c}>{c}</option>)}
+          </select>
+        </div>
+        <div style={{display:'flex',gap:6}}>
+          {[['all','🌍 Familia'],['me','👤 Yo'],['partner','👩 Pareja']].map(([v,l])=>(
+            <button key={v} onClick={()=>setWho(v)} style={{flex:1,padding:'5px 0',borderRadius:8,border:'none',cursor:'pointer',fontSize:12,fontWeight:700,background:who===v?'#6366f1':'#334155',color:who===v?'#fff':'#94a3b8'}}>{l}</button>
+          ))}
+        </div>
+      </div>
+
+      {/* DASHBOARD */}
+      {tab==='dash'&&(
+        <div style={{padding:16}}>
+          <div style={{background:'linear-gradient(135deg,#4f46e5,#7c3aed)',borderRadius:20,padding:20,marginBottom:14,boxShadow:'0 8px 32px rgba(99,102,241,.3)'}}>
+            <div style={{fontSize:12,opacity:.8,marginBottom:4}}>Balance neto · {who==='all'?'Familia':who==='me'?'Yo':'Pareja'}</div>
+            <div style={{fontSize:36,fontWeight:800,letterSpacing:'-1.5px'}}>{SYMB[base]}{bal.toFixed(2)}</div>
+            <div style={{display:'flex',gap:16,marginTop:10,fontSize:12}}>
+              <span style={{opacity:.9}}>💚 Ahorro <b>{inc>0?((bal/inc)*100).toFixed(1):0}%</b></span>
+              <span style={{opacity:.9}}>🎯 Libre <b>{fmtA(Math.max(0,bal-fut),base)}</b></span>
+            </div>
+          </div>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:14}}>
+            {[['📈','Ingresos',inc,'#10b981'],['📉','Gastos',exp,'#ef4444'],['📊','Inversiones',inv,'#818cf8'],['🗓️','Futuros',fut,'#f59e0b']].map(([ic,lb,val,col])=>(
+              <div key={lb} style={{background:'#1e293b',borderRadius:14,padding:14,borderLeft:`3px solid ${col}`}}>
+                <div style={{fontSize:11,color:'#64748b',marginBottom:4}}>{ic} {lb}</div>
+                <div style={{fontSize:18,fontWeight:700,color:col}}>{fmtA(val,base)}</div>
+              </div>
+            ))}
+          </div>
+          {md.length>0&&(
+            <div style={{background:'#1e293b',borderRadius:18,padding:16,marginBottom:14}}>
+              <div style={{fontSize:14,fontWeight:700,marginBottom:12}}>📊 Evolución mensual</div>
+              <ResponsiveContainer width="100%" height={160}>
+                <BarChart data={md} margin={{top:0,right:0,left:-25,bottom:0}}>
+                  <XAxis dataKey="k" tick={{fill:'#64748b',fontSize:11}} axisLine={false} tickLine={false}/>
+                  <YAxis tick={{fill:'#64748b',fontSize:11}} axisLine={false} tickLine={false}/>
+                  <Tooltip contentStyle={{background:'#1e293b',border:'1px solid #334155',borderRadius:8,fontSize:12}} cursor={{fill:'rgba(255,255,255,.04)'}}/>
+                  <Bar dataKey="income" name="Ingresos" fill="#10b981" radius={[3,3,0,0]}/>
+                  <Bar dataKey="expense" name="Gastos" fill="#ef4444" radius={[3,3,0,0]}/>
+                  <Bar dataKey="investment" name="Inversiones" fill="#818cf8" radius={[3,3,0,0]}/>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+          {cd.length>0&&(
+            <div style={{background:'#1e293b',borderRadius:18,padding:16,marginBottom:14}}>
+              <div style={{fontSize:14,fontWeight:700,marginBottom:10}}>🍩 Gastos por categoría</div>
+              <div style={{display:'flex',alignItems:'center'}}>
+                <PieChart width={130} height={130}>
+                  <Pie data={cd} cx={60} cy={60} innerRadius={35} outerRadius={60} dataKey="v" stroke="none">{cd.map((_,i)=><Cell key={i} fill={PC[i%PC.length]}/>)}</Pie>
+                  <Tooltip contentStyle={{background:'#1e293b',border:'1px solid #334155',borderRadius:8,fontSize:12}} formatter={v=>fmtA(v,base)}/>
+                </PieChart>
+                <div style={{flex:1,fontSize:12,paddingLeft:4}}>
+                  {cd.slice(0,6).map((d,i)=>(
+                    <div key={d.n} style={{display:'flex',justifyContent:'space-between',marginBottom:5,alignItems:'center'}}>
+                      <div style={{display:'flex',alignItems:'center',gap:5}}><div style={{width:8,height:8,borderRadius:'50%',background:PC[i%PC.length],flexShrink:0}}/><span style={{color:'#cbd5e1'}}>{d.n}</span></div>
+                      <span style={{fontWeight:600}}>{fmtA(d.v,base)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+          <div style={{display:'flex',gap:10,marginBottom:12}}>
+            <button onClick={()=>askAI('Genera un resumen completo de nuestra situación financiera. Analiza ingresos, gastos por categoría, tasa de ahorro e inversiones. Dame 3 recomendaciones concretas para una familia joven en Madrid con bebé.')}
+              style={{flex:1,background:'#1e293b',border:'1px solid #6366f1',borderRadius:14,padding:13,cursor:'pointer',color:'#e2e8f0',fontSize:13,fontWeight:700,display:'flex',alignItems:'center',justifyContent:'center',gap:6}}>🤖 Analizar con IA</button>
+            <button onClick={()=>{setShowPdf(true);setPdfStep('upload');setPdfTxs([]);}}
+              style={{flex:1,background:'#1e293b',border:'1px solid #334155',borderRadius:14,padding:13,cursor:'pointer',color:'#e2e8f0',fontSize:13,fontWeight:700,display:'flex',alignItems:'center',justifyContent:'center',gap:6}}>📄 Importar PDF</button>
+          </div>
+          {txs.length===0&&(<div style={{textAlign:'center',padding:'32px 0',color:'#475569'}}><div style={{fontSize:52,marginBottom:12}}>💸</div><div style={{fontWeight:700,fontSize:15,marginBottom:6}}>Sin movimientos aún</div><div style={{fontSize:13}}>Tocá <b style={{color:'#6366f1'}}>＋</b> para añadir o <b style={{color:'#94a3b8'}}>📄 Importar PDF</b></div></div>)}
+        </div>
+      )}
+
+      {/* HISTORIAL */}
+      {tab==='hist'&&(
+        <div style={{padding:16}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
+            <div style={{fontWeight:700,fontSize:16}}>📋 Historial</div>
+            <button onClick={()=>{setShowPdf(true);setPdfStep('upload');setPdfTxs([]);}} style={{background:'#1e293b',border:'1px solid #334155',borderRadius:20,padding:'6px 12px',cursor:'pointer',color:'#94a3b8',fontSize:12,fontWeight:600}}>📄 Importar PDF</button>
+          </div>
+          <div style={{display:'flex',gap:6,marginBottom:14,overflowX:'auto',paddingBottom:2}}>
+            {[['all','Todos'],['income','Ingresos'],['expense','Gastos'],['investment','Inversiones'],['future','Futuros']].map(([v,l])=>(
+              <button key={v} onClick={()=>setFtf(v)} style={{padding:'6px 12px',borderRadius:20,border:'none',cursor:'pointer',fontSize:12,fontWeight:700,whiteSpace:'nowrap',flexShrink:0,background:ftf===v?(TC[v]||'#6366f1'):'#1e293b',color:ftf===v?'#fff':'#64748b'}}>{l}</button>
+            ))}
+          </div>
+          {filtTxs.length===0?<div style={{textAlign:'center',padding:48,color:'#475569'}}>Sin movimientos</div>:filtTxs.map(t=>(
+            <div key={t.id} style={{background:'#1e293b',borderRadius:14,padding:14,marginBottom:8,display:'flex',alignItems:'center',gap:10,borderLeft:`3px solid ${TC[t.type]}`}}>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{display:'flex',justifyContent:'space-between',marginBottom:3}}>
+                  <span style={{fontWeight:700,fontSize:14,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{t.cat}</span>
+                  <span style={{fontWeight:700,color:TC[t.type],flexShrink:0,marginLeft:8}}>{t.type==='income'?'+':'-'}{SYMB[t.cur]}{t.amt.toFixed(2)}</span>
+                </div>
+                <div style={{fontSize:12,color:'#64748b',display:'flex',gap:6,flexWrap:'wrap'}}>
+                  <span>{t.desc||TL[t.type]}</span><span>·</span><span>{t.date}</span><span>·</span>
+                  <span>{t.who==='me'?'👤 Yo':'👩 Pareja'}</span>{t.recurring&&<span>🔄</span>}
+                  {base!==t.cur&&<span style={{color:'#334155'}}>≈{fmtA(conv(t.amt,t.cur,base),base)}</span>}
+                </div>
+              </div>
+              <button onClick={()=>delTx(t.id)} style={{background:'none',border:'none',cursor:'pointer',color:'#475569',fontSize:16,padding:4,flexShrink:0}}>✕</button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* AI */}
+      {tab==='ai'&&(
+        <div style={{padding:'16px 16px 0',display:'flex',flexDirection:'column',height:'calc(100vh - 190px)'}}>
+          <div style={{fontWeight:700,fontSize:16,marginBottom:10}}>🤖 Asesor IA</div>
+          <div style={{display:'flex',gap:6,marginBottom:12,flexWrap:'wrap'}}>
+            {[['📊 Resumen','Genera un resumen completo de nuestra situación financiera familiar con recomendaciones.'],['💡 Ahorrar','¿Cómo puedo aumentar nuestra tasa de ahorro? Estrategias concretas para Madrid con bebé.'],['📈 Invertir','¿Cuánto y en qué debería invertir según mi situación? Somos uruguayos en España.'],['⚠️ Alertas','Identificá patrones negativos o gastos preocupantes en mis finanzas.']].map(([l,m])=>(
+              <button key={l} onClick={()=>askAI(m)} style={{background:'#1e293b',border:'1px solid #334155',borderRadius:20,padding:'6px 12px',cursor:'pointer',color:'#cbd5e1',fontSize:12,fontWeight:600}}>{l}</button>
+            ))}
+          </div>
+          <div ref={chatEl} style={{flex:1,overflowY:'auto',display:'flex',flexDirection:'column',gap:10,paddingRight:2,paddingBottom:4}}>
+            {msgs.length===0&&<div style={{textAlign:'center',color:'#475569',padding:'40px 0'}}><div style={{fontSize:52,marginBottom:10}}>🤖</div><div style={{fontWeight:700,fontSize:15}}>Tu asesor financiero personal</div><div style={{fontSize:13,marginTop:6}}>Usá los accesos rápidos o escribí tu pregunta</div></div>}
+            {msgs.map((m,i)=>(<div key={i} style={{display:'flex',justifyContent:m.r==='user'?'flex-end':'flex-start'}}><div style={{maxWidth:'87%',padding:'10px 14px',lineHeight:1.6,fontSize:14,whiteSpace:'pre-wrap',wordBreak:'break-word',borderRadius:m.r==='user'?'18px 18px 4px 18px':'4px 18px 18px 18px',background:m.r==='user'?'#4f46e5':'#1e293b'}}>{m.c}</div></div>))}
+            {aBusy&&<div style={{display:'flex',gap:5,padding:'12px 14px',background:'#1e293b',borderRadius:'4px 18px 18px 18px',width:'fit-content'}}>{[0,1,2].map(i=><div key={i} style={{width:8,height:8,borderRadius:'50%',background:'#6366f1',animation:`pulse 1.2s ${i*0.3}s infinite`}}/>)}</div>}
+          </div>
+          <div style={{display:'flex',gap:8,padding:'10px 0 12px'}}>
+            <input value={aInp} onChange={e=>setAInp(e.target.value)} onKeyDown={e=>e.key==='Enter'&&!aBusy&&askAI(aInp)} placeholder="Pregunta lo que quieras..." style={{flex:1,background:'#1e293b',border:'1px solid #334155',borderRadius:24,padding:'10px 16px',color:'#e2e8f0',fontSize:14,outline:'none'}}/>
+            <button onClick={()=>askAI(aInp)} disabled={aBusy} style={{background:'#6366f1',border:'none',borderRadius:'50%',width:44,height:44,cursor:aBusy?'not-allowed':'pointer',opacity:aBusy?.6:1,fontSize:18,display:'flex',alignItems:'center',justifyContent:'center',color:'#fff',flexShrink:0}}>➤</button>
+          </div>
+        </div>
+      )}
+
+      {/* PDF MODAL */}
+      {showPdf&&(
+        <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,.88)',zIndex:200,display:'flex',flexDirection:'column'}} onClick={()=>{ if(!pdfBusy) closePdf(); }}>
+          <div style={{background:'#1e293b',flex:1,marginTop:56,borderRadius:'22px 22px 0 0',display:'flex',flexDirection:'column',overflow:'hidden'}} onClick={e=>e.stopPropagation()}>
+            <div style={{padding:'16px 20px',borderBottom:'1px solid #334155',display:'flex',justifyContent:'space-between',alignItems:'center',flexShrink:0}}>
+              <div><div style={{fontWeight:700,fontSize:16}}>📄 Importar extracto PDF</div><div style={{fontSize:12,color:'#64748b'}}>{pdfStep==='upload'?'Subí tu extracto bancario':'Revisá y confirmá las transacciones'}</div></div>
+              {!pdfBusy&&<button onClick={closePdf} style={{background:'none',border:'none',cursor:'pointer',color:'#64748b',fontSize:22}}>✕</button>}
+            </div>
+            {pdfStep==='upload'&&(
+              <div style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',padding:28}}>
+                {pdfBusy?(
+                  <div style={{textAlign:'center'}}><div style={{fontSize:56,marginBottom:16}}>🔍</div><div style={{fontWeight:700,fontSize:17,marginBottom:8}}>Analizando con IA...</div><div style={{fontSize:13,color:'#64748b',marginBottom:24}}>Extrayendo transacciones</div><div style={{display:'flex',gap:8,justifyContent:'center'}}>{[0,1,2].map(i=><div key={i} style={{width:10,height:10,borderRadius:'50%',background:'#6366f1',animation:`pulse 1.2s ${i*0.3}s infinite`}}/>)}</div></div>
+                ):(
+                  <>
+                    <div style={{width:'100%',maxWidth:320,border:'2px dashed #334155',borderRadius:20,padding:'36px 28px',textAlign:'center',cursor:'pointer',background:'#0f172a'}} onClick={()=>fileRef.current?.click()} onDragOver={e=>e.preventDefault()} onDrop={e=>{e.preventDefault();const f=e.dataTransfer.files[0];if(f?.type==='application/pdf')handlePdf(f);}}>
+                      <div style={{fontSize:56,marginBottom:12}}>📄</div>
+                      <div style={{fontWeight:700,fontSize:15,marginBottom:8}}>Subir extracto bancario</div>
+                      <div style={{fontSize:13,color:'#64748b',lineHeight:1.7}}>Tocá aquí o arrastrá el PDF<br/><span style={{fontSize:12,color:'#475569'}}>Solo PDFs con texto seleccionable</span></div>
+                    </div>
+                    <input ref={fileRef} type="file" accept=".pdf,application/pdf" style={{display:'none'}} onChange={e=>{if(e.target.files[0]) handlePdf(e.target.files[0]);}}/>
+                    <div style={{marginTop:20,background:'#0f172a',borderRadius:14,padding:'12px 16px',maxWidth:320,width:'100%'}}>
+                      <div style={{fontSize:12,color:'#64748b',lineHeight:1.8}}>💡 <b style={{color:'#94a3b8'}}>Cómo obtener el PDF:</b><br/>App del banco → Movimientos → Descargar extracto</div>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+            {pdfStep==='review'&&(
+              <>
+                <div style={{padding:'10px 16px',borderBottom:'1px solid #334155',display:'flex',justifyContent:'space-between',alignItems:'center',flexShrink:0}}>
+                  <span style={{fontSize:13,color:'#94a3b8'}}><b style={{color:'#e2e8f0'}}>{selCount}</b> de {pdfTxs.length} seleccionadas</span>
+                  <div style={{display:'flex',gap:8}}>
+                    <button onClick={()=>togAll(true)} style={{background:'none',border:'1px solid #334155',borderRadius:8,padding:'4px 10px',cursor:'pointer',color:'#94a3b8',fontSize:12}}>Todas</button>
+                    <button onClick={()=>togAll(false)} style={{background:'none',border:'1px solid #334155',borderRadius:8,padding:'4px 10px',cursor:'pointer',color:'#94a3b8',fontSize:12}}>Ninguna</button>
+                  </div>
+                </div>
+                <div style={{flex:1,overflowY:'auto',padding:'8px 14px'}}>
+                  {pdfTxs.map((t,i)=>(
+                    <div key={t.tempId} style={{background:t.selected?'#0f172a':'#090e18',borderRadius:14,padding:12,marginBottom:8,border:`1px solid ${t.selected?'#334155':'#1a2233'}`,opacity:t.selected?1:.45}}>
+                      <div style={{display:'flex',alignItems:'flex-start',gap:10,marginBottom:t.selected?8:0}}>
+                        <div onClick={()=>updPdf(i,'selected',!t.selected)} style={{width:20,height:20,borderRadius:6,border:`2px solid ${t.selected?'#6366f1':'#475569'}`,background:t.selected?'#6366f1':'transparent',cursor:'pointer',flexShrink:0,display:'flex',alignItems:'center',justifyContent:'center',marginTop:2}}>
+                          {t.selected&&<span style={{color:'#fff',fontSize:11,fontWeight:700}}>✓</span>}
+                        </div>
+                        <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:600,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',marginBottom:2}}>{t.description}</div><div style={{fontSize:11,color:'#64748b'}}>{t.date}</div></div>
+                        <div style={{fontWeight:700,color:TC[t.type]||'#e2e8f0',flexShrink:0,fontSize:14}}>{t.type==='income'?'+':'-'}{SYMB[t.currency||'EUR']}{parseFloat(t.amount).toFixed(2)}</div>
+                      </div>
+                      {t.selected&&(
+                        <div style={{display:'flex',gap:6,paddingLeft:30}}>
+                          <select value={t.type} onChange={e=>updPdf(i,'type',e.target.value)} style={{...si,flex:1,padding:'5px 6px',fontSize:11}}>
+                            <option value="expense">Gasto</option><option value="income">Ingreso</option><option value="investment">Inversión</option>
+                          </select>
+                          <select value={t.suggestedCategory} onChange={e=>updPdf(i,'suggestedCategory',e.target.value)} style={{...si,flex:2,padding:'5px 6px',fontSize:11}}>
+                            {ALL_CATS.map(c=><option key={c}>{c}</option>)}
+                          </select>
+                          <select value={t.who} onChange={e=>updPdf(i,'who',e.target.value)} style={{...si,flex:1,padding:'5px 6px',fontSize:11}}>
+                            <option value="me">Yo</option><option value="partner">Pareja</option>
+                          </select>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                <div style={{padding:'12px 16px',borderTop:'1px solid #334155',flexShrink:0}}>
+                  <button onClick={importPdf} disabled={selCount===0} style={{width:'100%',background:selCount>0?'linear-gradient(135deg,#6366f1,#8b5cf6)':'#334155',border:'none',borderRadius:14,padding:14,color:'#fff',fontSize:15,fontWeight:800,cursor:selCount>0?'pointer':'not-allowed',opacity:selCount>0?1:.5}}>
+                    ✅ Importar {selCount} transacción{selCount!==1?'es':''}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ADD MODAL */}
+      {showAdd&&(
+        <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,.75)',zIndex:100,display:'flex',alignItems:'flex-end'}} onClick={()=>setShowAdd(false)}>
+          <div style={{background:'#1e293b',borderRadius:'22px 22px 0 0',padding:'20px 20px 36px',width:'100%',maxWidth:480,margin:'0 auto',boxSizing:'border-box'}} onClick={e=>e.stopPropagation()}>
+            <div style={{width:36,height:4,background:'#334155',borderRadius:2,margin:'0 auto 16px'}}/>
+            <div style={{fontWeight:700,fontSize:16,marginBottom:14}}>Nuevo movimiento</div>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:6,marginBottom:14}}>
+              {Object.entries(TL).map(([v,l])=>(<button key={v} onClick={()=>setFrm(f=>({...f,type:v,cat:''}))} style={{padding:'8px 4px',borderRadius:10,border:'none',cursor:'pointer',fontSize:11,fontWeight:700,background:frm.type===v?TC[v]:'#334155',color:frm.type===v?'#fff':'#94a3b8'}}>{l}</button>))}
+            </div>
+            <select value={frm.cat} onChange={e=>setFrm(f=>({...f,cat:e.target.value}))} style={{...si,width:'100%',marginBottom:10,color:frm.cat?'#e2e8f0':'#64748b'}}>
+              <option value="">Categoría...</option>{CATS[frm.type].map(c=><option key={c}>{c}</option>)}
+            </select>
+            <input value={frm.desc} onChange={e=>setFrm(f=>({...f,desc:e.target.value}))} placeholder="Descripción (opcional)" style={{...si,width:'100%',marginBottom:10}}/>
+            <div style={{display:'flex',gap:8,marginBottom:10}}>
+              <input value={frm.amt} onChange={e=>setFrm(f=>({...f,amt:e.target.value}))} placeholder="Importe" type="number" min="0" step="0.01" style={{...si,flex:2}}/>
+              <select value={frm.cur} onChange={e=>setFrm(f=>({...f,cur:e.target.value}))} style={{...si,flex:1}}>{['EUR','USD','UYU'].map(c=><option key={c}>{c}</option>)}</select>
+            </div>
+            <div style={{display:'flex',gap:8,marginBottom:12}}>
+              <input type="date" value={frm.date} onChange={e=>setFrm(f=>({...f,date:e.target.value}))} style={{...si,flex:1}}/>
+              <select value={frm.who} onChange={e=>setFrm(f=>({...f,who:e.target.value}))} style={{...si,flex:1}}><option value="me">👤 Yo</option><option value="partner">👩 Pareja</option></select>
+            </div>
+            <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:16}}>
+              <div onClick={()=>setFrm(f=>({...f,recurring:!f.recurring}))} style={{width:44,height:24,borderRadius:12,background:frm.recurring?'#6366f1':'#334155',cursor:'pointer',position:'relative',transition:'background .2s',flexShrink:0}}>
+                <div style={{width:18,height:18,borderRadius:'50%',background:'#fff',position:'absolute',top:3,left:frm.recurring?23:3,transition:'left .2s'}}/>
+              </div>
+              <span style={{fontSize:14,color:'#94a3b8'}}>Recurrente mensual</span>
+            </div>
+            <button onClick={addTx} style={{width:'100%',background:'linear-gradient(135deg,#6366f1,#8b5cf6)',border:'none',borderRadius:14,padding:14,color:'#fff',fontSize:15,fontWeight:800,cursor:'pointer'}}>Añadir movimiento</button>
+          </div>
+        </div>
+      )}
+
+      {/* BOTTOM NAV */}
+      <div style={{position:'fixed',bottom:0,left:'50%',transform:'translateX(-50%)',width:'100%',maxWidth:480,background:'#1e293b',borderTop:'1px solid #334155',display:'flex',alignItems:'center',padding:'4px 8px 10px',zIndex:50,boxSizing:'border-box'}}>
+        {navBtn('dash','📊','Inicio')}
+        {navBtn('hist','📋','Historial')}
+        <button onClick={()=>setShowAdd(true)} style={{flex:'0 0 auto',width:52,height:52,borderRadius:'50%',background:'linear-gradient(135deg,#6366f1,#8b5cf6)',border:'none',cursor:'pointer',fontSize:28,display:'flex',alignItems:'center',justifyContent:'center',margin:'0 6px -10px',boxShadow:'0 4px 18px rgba(99,102,241,.55)',color:'#fff',lineHeight:1}}>＋</button>
+        {navBtn('ai','🤖','IA')}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>
