@@ -47,18 +47,22 @@ const today=()=>new Date().toISOString().slice(0,10);
 const BLANK={type:'expense',cat:'',desc:'',amt:'',cur:'EUR',who:'me',date:today(),recurring:false};
 const ls={get:k=>{try{return JSON.parse(localStorage.getItem(k));}catch{return null;}},set:(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v));}catch{}}};
 
-function Setup({onDone}){
+function Setup({onDone,onSkip}){
   const[k,setK]=useState('');
   return html`<div style=${{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',padding:24}}>
     <div style=${{background:'#1e293b',borderRadius:20,padding:32,maxWidth:360,width:'100%'}}>
       <div style=${{fontSize:48,textAlign:'center',marginBottom:12}}>💰</div>
       <div style=${{fontSize:22,fontWeight:800,textAlign:'center',marginBottom:6}}>FinanzasIA</div>
-      <div style=${{fontSize:13,color:'#64748b',textAlign:'center',marginBottom:24,lineHeight:1.7}}>Necesitás una API key de Anthropic para usar el Asesor IA y la importación de PDF.</div>
+      <div style=${{fontSize:13,color:'#64748b',textAlign:'center',marginBottom:24,lineHeight:1.7}}>Para usar el Asesor IA y la importación de PDF necesitás una API key de Anthropic (gratis).</div>
       <input value=${k} onChange=${e=>setK(e.target.value)} onKeyDown=${e=>e.key==='Enter'&&k.trim()&&(ls.set('fin_key',k.trim()),onDone(k.trim()))} placeholder="sk-ant-api03-..."
         style=${{width:'100%',background:'#0f172a',border:'1px solid #334155',borderRadius:10,padding:'12px 16px',color:'#e2e8f0',fontSize:14,marginBottom:10}}/>
       <button onClick=${()=>{if(k.trim()){ls.set('fin_key',k.trim());onDone(k.trim());}}}
-        style=${{width:'100%',background:'linear-gradient(135deg,#6366f1,#8b5cf6)',border:'none',borderRadius:12,padding:14,color:'#fff',fontSize:15,fontWeight:700,cursor:'pointer',marginBottom:14}}>
-        Entrar a FinanzasIA
+        style=${{width:'100%',background:'linear-gradient(135deg,#6366f1,#8b5cf6)',border:'none',borderRadius:12,padding:14,color:'#fff',fontSize:15,fontWeight:700,cursor:'pointer',marginBottom:10}}>
+        Entrar con API key
+      </button>
+      <button onClick=${onSkip}
+        style=${{width:'100%',background:'none',border:'1px solid #334155',borderRadius:12,padding:12,color:'#94a3b8',fontSize:14,fontWeight:600,cursor:'pointer',marginBottom:14}}>
+        Continuar sin IA →
       </button>
       <div style=${{fontSize:12,color:'#475569',textAlign:'center',lineHeight:1.8}}>
         Obtené tu key en <a href="https://console.anthropic.com" target="_blank" style=${{color:'#6366f1',textDecoration:'none'}}>console.anthropic.com</a><br/>Se guarda solo en tu dispositivo.
@@ -69,6 +73,7 @@ function Setup({onDone}){
 
 function App(){
   const[apiKey,setApiKey]=useState(()=>ls.get('fin_key')||'');
+  const[skipped,setSkipped]=useState(()=>!!ls.get('fin_skip'));
   const[txs,setTxs]=useState(()=>ls.get('fin_txs')||[]);
   const[tab,setTab]=useState('dash');
   const[who,setWho]=useState('all');
@@ -92,7 +97,7 @@ function App(){
   useEffect(()=>{ls.set('fin_txs',txs);},[txs]);
   useEffect(()=>{chatEl.current?.scrollTo(0,chatEl.current.scrollHeight);},[msgs]);
 
-  if(!apiKey) return html`<${Setup} onDone=${k=>setApiKey(k)}/>`;
+  if(!apiKey&&!skipped) return html`<${Setup} onDone=${k=>setApiKey(k)} onSkip=${()=>{ls.set('fin_skip',1);setSkipped(true);}}/>`;
 
   const vis=txs.filter(t=>who==='all'||t.who===who);
   const sumT=tp=>vis.filter(t=>t.type===tp).reduce((s,t)=>s+conv(t.amt,t.cur,base),0);
